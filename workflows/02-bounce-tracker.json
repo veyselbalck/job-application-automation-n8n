@@ -1,0 +1,163 @@
+{
+ "name": "Geri Donenleri Isaretle",
+ "nodes": [
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "cronExpression",
+       "expression": "30 9 * * 1-5"
+      }
+     ]
+    }
+   },
+   "id": "b1",
+   "name": "Weekdays 09:30",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    0,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "options": {}
+   },
+   "id": "b2",
+   "name": "Read Queue",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    220,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "resource": "message",
+    "operation": "getAll",
+    "returnAll": false,
+    "limit": 50,
+    "filters": {
+     "q": "from:(mailer-daemon OR postmaster) newer_than:2d"
+    }
+   },
+   "id": "b3",
+   "name": "Bounce mailleri",
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    440,
+    0
+   ],
+   "alwaysOutputData": true,
+   "executeOnce": true
+  },
+  {
+   "parameters": {
+    "jsCode": "\n// Geri dönen (bounce) maillerdeki adresleri bul, kuyrukta 'sent' olanları 'bounced' yap\nconst queue = $('Read Queue').all().map(i => i.json);\nconst sent = new Set(queue.filter(r => (r.Status === 'sent' || r.Status === 'approved') && r.Email).map(r => String(r.Email).toLowerCase().trim()));\nconst found = new Set();\nfor (const item of $input.all()) {\n  const text = JSON.stringify(item.json);\n  (text.match(/[a-z0-9._%+\\-]+@[a-z0-9\\-]+(?:\\.[a-z0-9\\-]+)+/gi) || []).forEach(e => {\n    e = e.toLowerCase();\n    if (sent.has(e)) found.add(e);\n  });\n}\nreturn [...found].map(e => ({ json: { Email: e, Status: 'bounced' } }));\n"
+   },
+   "id": "b4",
+   "name": "Adresleri çıkar",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    660,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "update",
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "autoMapInputData",
+     "value": {},
+     "matchingColumns": [
+      "Email"
+     ]
+    },
+    "options": {}
+   },
+   "id": "b5",
+   "name": "Update Queue",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    880,
+    0
+   ]
+  }
+ ],
+ "connections": {
+  "Read Queue": {
+   "main": [
+    [
+     {
+      "node": "Bounce mailleri",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Bounce mailleri": {
+   "main": [
+    [
+     {
+      "node": "Adresleri çıkar",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Adresleri çıkar": {
+   "main": [
+    [
+     {
+      "node": "Update Queue",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Weekdays 09:30": {
+   "main": [
+    [
+     {
+      "node": "Read Queue",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Europe/Istanbul"
+ }
+}

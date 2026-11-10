@@ -1,0 +1,219 @@
+{
+ "name": "E-posta Bulucu (Web sitesi)",
+ "nodes": [
+  {
+   "parameters": {},
+   "id": "w1",
+   "name": "Manual Trigger",
+   "type": "n8n-nodes-base.manualTrigger",
+   "typeVersion": 1,
+   "position": [
+    0,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "options": {}
+   },
+   "id": "w2",
+   "name": "Read Queue",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    220,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\n// ===== AYARLAR =====\nconst LIMIT = 20;   // her çalıştırmada kaç firma taransın\n// ===================\nconst rows = $input.all().map(i => i.json)\n  .filter(r => r.Status === 'needs_email' && r.Website)\n  .sort((a, b) => Number(a.Rank) - Number(b.Rank))\n  .slice(0, LIMIT);\nconst domainOf = (url) => {\n  try {\n    const h = new URL(/^https?:/.test(url) ? url : 'https://' + url).hostname.toLowerCase().replace(/^www\\./, '');\n    const p = h.split('.');\n    if (p.length >= 3 && p[p.length - 1] === 'tr' && ['com','org','net','gov','edu'].includes(p[p.length - 2])) return p.slice(-3).join('.');\n    return p.slice(-2).join('.');\n  } catch (e) { return ''; }\n};\nreturn rows.map(r => ({ json: { Company: r.Company, Website: r.Website, CareersUrl: r.CareersUrl || '', Domain: domainOf(r.Website) } }))\n           .filter(i => i.json.Domain);\n"
+   },
+   "id": "w3",
+   "name": "Select rows",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\nconst PATHS = ['', '/iletisim', '/kariyer', '/contact', '/careers', '/insan-kaynaklari', '/bize-ulasin'];\nconst out = [];\nfor (const item of $input.all()) {\n  const base = new URL(/^https?:/.test(item.json.Website) ? item.json.Website : 'https://' + item.json.Website).origin;\n  const urls = new Set(PATHS.map(p => base + p));\n  if (item.json.CareersUrl) urls.add(item.json.CareersUrl);\n  for (const u of urls) out.push({ json: { Company: item.json.Company, Domain: item.json.Domain, url: u } });\n}\nreturn out;\n"
+   },
+   "id": "w4",
+   "name": "Build URLs",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    660,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "url": "={{ $json.url }}",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "User-Agent",
+       "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+      }
+     ]
+    },
+    "options": {
+     "timeout": 10000,
+     "response": {
+      "response": {
+       "responseFormat": "text",
+       "neverError": true
+      }
+     },
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 800
+      }
+     }
+    }
+   },
+   "id": "w5",
+   "name": "Fetch page",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    880,
+    0
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "\nconst base = $('Select rows').all().map(i => i.json);\nconst urls = $('Build URLs').all();\nconst state = {};\nbase.forEach(b => state[b.Company] = { domain: b.Domain, fetched: 0, emails: new Set() });\n\nconst badTld = /\\.(png|jpe?g|gif|svg|webp|css|js|ico|woff2?|pdf)$/i;\nconst rx = /[a-z0-9._%+\\-]+@[a-z0-9\\-]+(?:\\.[a-z0-9\\-]+)*\\.[a-z]{2,}/gi;\n$input.all().forEach((item, idx) => {\n  const src = urls[item.pairedItem?.item ?? idx]?.json;\n  if (!src || !state[src.Company]) return;\n  let txt = typeof item.json.data === 'string' ? item.json.data : '';\n  if (!txt) return;\n  state[src.Company].fetched++;\n  txt = txt.replace(/&#0*64;|&commat;|\\[at\\]|\\(at\\)/gi, '@').replace(/%40/g, '@');\n  (txt.match(rx) || []).forEach(e => {\n    e = e.toLowerCase();\n    if (badTld.test(e)) return;\n    const d = e.split('@')[1];\n    if (d === state[src.Company].domain || d.endsWith('.' + state[src.Company].domain)) state[src.Company].emails.add(e);\n  });\n});\n\nconst hr = /^(ik|hr|kariyer|career|careers|insankaynaklari|insan\\.kaynaklari|recruit|recruitment|talent|jobs|job|basvuru|staj|cv)/i;\nconst generic = /^(info|iletisim|contact|bilgi|hello|merhaba)/i;\nreturn Object.entries(state).map(([Company, s]) => {\n  const list = [...s.emails];\n  const best = list.find(e => hr.test(e.split('@')[0])) || list.find(e => generic.test(e.split('@')[0]));\n  return { json: {\n    Company,\n    Email: best || '',\n    Status: best ? 'pending_review' : (s.fetched ? 'no_email_found' : 'fetch_failed')\n  } };\n});\n"
+   },
+   "id": "w6",
+   "name": "Extract emails",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1100,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "update",
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "autoMapInputData",
+     "value": {},
+     "matchingColumns": [
+      "Company"
+     ]
+    },
+    "options": {}
+   },
+   "id": "w7",
+   "name": "Update Queue",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    1320,
+    0
+   ]
+  }
+ ],
+ "connections": {
+  "Manual Trigger": {
+   "main": [
+    [
+     {
+      "node": "Read Queue",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Queue": {
+   "main": [
+    [
+     {
+      "node": "Select rows",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Select rows": {
+   "main": [
+    [
+     {
+      "node": "Build URLs",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build URLs": {
+   "main": [
+    [
+     {
+      "node": "Fetch page",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Fetch page": {
+   "main": [
+    [
+     {
+      "node": "Extract emails",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Extract emails": {
+   "main": [
+    [
+     {
+      "node": "Update Queue",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Europe/Istanbul"
+ }
+}

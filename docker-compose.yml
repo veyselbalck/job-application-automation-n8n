@@ -1,0 +1,18 @@
+# Minimal self-hosting example. Put n8n behind HTTPS (reverse proxy / tunnel) before
+# connecting Google accounts: Google OAuth only accepts https redirect URLs (except localhost).
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=Europe/Istanbul
+      - TZ=Europe/Istanbul
+      # - N8N_HOST=n8n.example.com
+      # - N8N_PROTOCOL=https
+      # - WEBHOOK_URL=https://n8n.example.com/
+    volumes:
+      - n8n_data:/home/node/.n8n
+volumes:
+  n8n_data:

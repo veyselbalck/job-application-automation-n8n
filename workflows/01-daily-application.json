@@ -1,0 +1,555 @@
+{
+ "name": "Günlük Başvuru (bul + gönder)",
+ "nodes": [
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "cronExpression",
+       "expression": "0 10 * * 1-5"
+      }
+     ]
+    }
+   },
+   "id": "n1",
+   "name": "Hafta içi 10:00",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    0,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "options": {}
+   },
+   "id": "n2",
+   "name": "Read Queue",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    220,
+    0
+   ],
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "jsCode": "\n// ===== AYARLAR =====\nconst KOMBINASYON = 3;     // her çalıştırmada kaç sektör/şehir araması yapılsın\nconst FIRMA_SAYISI = 20;   // her aramada kaç firma istensin\nconst SEHIRLER = [ { ad: \"Kocaeli\", base: 0 }, { ad: \"İstanbul\", base: 100 } ];   // Kocaeli önce\nconst SEKTORLER = [\"yazılım geliştirme\",\"web geliştirme\",\"mobil uygulama geliştirme\",\"e-ticaret teknolojileri\",\"oyun geliştirme\",\n  \"yapay zeka ve veri bilimi\",\"fintech\",\"SaaS ve platform geliştirme\",\"otomasyon ve gömülü sistemler\",\"siber güvenlik\",\"danışmanlık ve bilgi teknolojileri\"];\n// ===================\nconst pick = a => a[Math.floor(Math.random() * a.length)];\nconst out = [];\nfor (let i = 0; i < KOMBINASYON; i++) {\n  const s = SEHIRLER[i % SEHIRLER.length], sek = pick(SEKTORLER);\n  out.push({ json: { region: s.ad, base: s.base, sektor: sek, prompt:\n`Türkiye'de ${s.ad} merkezli veya ${s.ad}'da ofisi olan, ${sek} alanında faaliyet gösteren ${FIRMA_SAYISI} GERÇEK şirket listele. Bilgisayar mühendisi bir aday başvuru yapacak.\nHer şirket için: resmi web sitesi alan adı (website) ve insan kaynakları/kariyer için en olası e-posta adresi (email). E-posta mutlaka şirketin KENDİ alan adında olsun ve ik@, kariyer@, hr@, jobs@ ya da info@ kalıplarından biri olsun. Emin olmadığın şirketi listeye alma.\nSADECE JSON döndür: {\"companies\":[{\"firma\":\"\",\"website\":\"\",\"email\":\"\",\"sektor\":\"\"}]}` } });\n}\nreturn out;\n"
+   },
+   "id": "n3",
+   "name": "Build prompts",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "https://api.groq.com/openai/v1/chat/completions",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "groqApi",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ model: 'openai/gpt-oss-120b', temperature: 0.4, max_completion_tokens: 6000, reasoning_effort: 'low', messages: [{ role: 'user', content: $json.prompt }] }) }}",
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 2000
+      }
+     }
+    }
+   },
+   "id": "n4",
+   "name": "Groq",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    660,
+    0
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "\n// ===== AYARLAR =====\nconst ORTAK = [\"gmail.com\",\"hotmail.com\",\"outlook.com\",\"yahoo.com\",\"yandex.com\",\"icloud.com\"];\n// ===================\nconst queue = $('Read Queue').all().map(i => i.json);\nconst knownMail = new Set(queue.map(r => String(r.Email || '').toLowerCase().trim()).filter(Boolean));\nconst knownDom = new Set([...knownMail].map(e => e.split('@')[1]));\nconst norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9ığüşöç]/g, '');\nconst knownCo = new Set(queue.map(r => norm(r.Company)).filter(Boolean));\nconst src = $('Build prompts').all();\nconst out = [];\n$input.all().forEach((item, idx) => {\n  const meta = src[item.pairedItem?.item ?? idx]?.json || {};\n  let data;\n  try {\n    const txt = item.json.choices[0].message.content || '';\n    data = JSON.parse(txt.slice(txt.indexOf('{'), txt.lastIndexOf('}') + 1));\n  } catch (e) { return; }\n  (data.companies || []).forEach((c, n) => {\n    const email = String(c.email || '').toLowerCase().trim();\n    if (!/^[a-z0-9._%+\\-]+@[a-z0-9\\-]+(\\.[a-z0-9\\-]+)+$/.test(email)) return;\n    const dom = email.split('@')[1];\n    if (ORTAK.includes(dom) || knownMail.has(email) || knownDom.has(dom) || knownCo.has(norm(c.firma))) return;\n    knownMail.add(email); knownDom.add(dom); knownCo.add(norm(c.firma));\n    out.push({ json: { Domain: dom, Company: String(c.firma || '').trim(), Email: email, Website: c.website || '', Sector: c.sektor || meta.sektor || '',\n      Region: meta.region || '', Rank: Number(meta.base || 0) + n + 1, Type: 'tahmin', Status: 'approved', SentAt: '' } });\n  });\n});\nreturn out;\n"
+   },
+   "id": "n5",
+   "name": "Parse companies",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    880,
+    0
+   ],
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "url": "https://dns.google/resolve",
+    "sendQuery": true,
+    "queryParameters": {
+     "parameters": [
+      {
+       "name": "name",
+       "value": "={{ $json.Domain }}"
+      },
+      {
+       "name": "type",
+       "value": "MX"
+      }
+     ]
+    },
+    "options": {
+     "batching": {
+      "batch": {
+       "batchSize": 1,
+       "batchInterval": 300
+      }
+     }
+    }
+   },
+   "id": "n6",
+   "name": "MX kontrol",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1100,
+    0
+   ],
+   "onError": "continueRegularOutput",
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "jsCode": "\n// MX kaydı olan alan adlarını geçir; Domain alanını kaldır\nconst parsed = $('Parse companies').all();\nconst out = [];\n$input.all().forEach((item, idx) => {\n  const src = parsed[item.pairedItem?.item ?? idx]?.json;\n  if (!src) return;\n  const j = item.json || {};\n  const ok = j.Status === 0 && Array.isArray(j.Answer) && j.Answer.some(a => a.type === 15);\n  if (!ok) return;\n  const { Domain, ...rest } = src;\n  out.push({ json: rest });\n});\nreturn out;\n"
+   },
+   "id": "n7",
+   "name": "MX geçenler",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1320,
+    0
+   ],
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose"
+     },
+     "conditions": [
+      {
+       "id": "c1",
+       "leftValue": "={{ $json.Email }}",
+       "rightValue": "",
+       "operator": {
+        "type": "string",
+        "operation": "notEmpty",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "n8",
+   "name": "Yeni satır var mı?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2,
+   "position": [
+    1540,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "append",
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "autoMapInputData",
+     "value": {}
+    },
+    "options": {}
+   },
+   "id": "n9",
+   "name": "Save to Queue",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    1760,
+    -100
+   ]
+  },
+  {
+   "parameters": {
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "options": {}
+   },
+   "id": "n10",
+   "name": "Read Queue (güncel)",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    1980,
+    0
+   ],
+   "alwaysOutputData": true,
+   "executeOnce": true
+  },
+  {
+   "parameters": {
+    "jsCode": "// ===== SETTINGS =====\nconst DAILY_CAP = 5;                 // max emails per day (start low, raise slowly)\nconst PROFILE = {\n  name: \"YOUR NAME\",\n  phone: \"+90 5XX XXX XX XX\",\n  email: \"you@example.com\",\n  linkedin: \"linkedin.com/in/your-profile\",\n  github: \"github.com/your-username\"\n};\nconst SUBJECT = \"Job Application – \" + PROFILE.name;\n// Clean company names: \"Acme (Plant 2)\" -> \"Acme\"\nconst clean = (c) => String(c || '').replace(/\\s*\\([^)]*\\)\\s*/g, ' ').replace(/\\s+/g, ' ').trim();\nconst BODY = (company) => {\n  const co = clean(company);\n  return `Dear ${co ? co + ' Team' : 'Hiring Team'},\n\nI am a Computer Engineering graduate with hands-on experience in web, mobile, game development, AI/automation and e-commerce.\n\nI am looking for an opportunity where I can contribute and keep growing. My résumé is attached.\n\nBest regards,\n${PROFILE.name}\nPhone: ${PROFILE.phone}\nEmail: ${PROFILE.email}\nLinkedIn: ${PROFILE.linkedin}\nGitHub: ${PROFILE.github}`;\n};\n// ====================\n\nconst rows = $input.all().map(i => i.json).filter(r => r && r.Email);\n\n// Bounce-rate guard: stop if too many sent mails bounced\nconst nSent = rows.filter(r => r.Status === 'sent').length;\nconst nBounced = rows.filter(r => r.Status === 'bounced').length;\nif (nSent + nBounced >= 6 && nBounced / (nSent + nBounced) > 0.3) {\n  throw new Error('Bounce rate too high (' + nBounced + '/' + (nSent + nBounced) + '). Review the list.');\n}\n\n// Daily cap (Europe/Istanbul time)\nconst today = $now.setZone('Europe/Istanbul').toFormat('yyyy-MM-dd');\nconst sentToday = rows.filter(r => r.Status === 'sent' && String(r.SentAt || '').startsWith(today)).length;\nconst left = DAILY_CAP - sentToday;\nif (left <= 0) return [];\n\nreturn rows\n  .filter(r => r.Status === 'approved')\n  .sort((a, b) => Number(a.Rank) - Number(b.Rank))\n  .slice(0, left)\n  .map(r => ({ json: { Email: r.Email, Company: r.Company, subject: SUBJECT, body: BODY(r.Company) } }));\n"
+   },
+   "id": "n11",
+   "name": "Gönderilecekleri seç",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2200,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "batchSize": 1,
+    "options": {}
+   },
+   "id": "n12",
+   "name": "Loop Over Items",
+   "type": "n8n-nodes-base.splitInBatches",
+   "typeVersion": 3,
+   "position": [
+    2420,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "resource": "file",
+    "operation": "download",
+    "fileId": {
+     "__rl": true,
+     "value": "BURAYA_CV_DRIVE_DOSYA_ID",
+     "mode": "id"
+    },
+    "options": {}
+   },
+   "id": "n13",
+   "name": "CV (Drive)",
+   "type": "n8n-nodes-base.googleDrive",
+   "typeVersion": 3,
+   "position": [
+    2640,
+    100
+   ]
+  },
+  {
+   "parameters": {
+    "resource": "message",
+    "operation": "send",
+    "sendTo": "={{ $('Loop Over Items').item.json.Email }}",
+    "subject": "={{ $('Loop Over Items').item.json.subject }}",
+    "emailType": "text",
+    "message": "={{ $('Loop Over Items').item.json.body }}",
+    "options": {
+     "appendAttribution": false,
+     "attachmentsUi": {
+      "attachmentsBinary": [
+       {
+        "property": "data"
+       }
+      ]
+     }
+    }
+   },
+   "id": "n14",
+   "name": "Gmail gönder",
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    2860,
+    100
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "update",
+    "documentId": {
+     "__rl": true,
+     "value": "BURAYA_SPREADSHEET_ID",
+     "mode": "id"
+    },
+    "sheetName": {
+     "__rl": true,
+     "value": "Queue",
+     "mode": "name"
+    },
+    "columns": {
+     "mappingMode": "defineBelow",
+     "value": {
+      "Email": "={{ $('Loop Over Items').item.json.Email }}",
+      "Status": "sent",
+      "SentAt": "={{ $now.setZone('Europe/Istanbul').toFormat('yyyy-MM-dd HH:mm') }}"
+     },
+     "matchingColumns": [
+      "Email"
+     ]
+    },
+    "options": {}
+   },
+   "id": "n15",
+   "name": "Mark sent",
+   "type": "n8n-nodes-base.googleSheets",
+   "typeVersion": 4.5,
+   "position": [
+    3080,
+    100
+   ]
+  },
+  {
+   "parameters": {
+    "resume": "timeInterval",
+    "amount": 2,
+    "unit": "minutes"
+   },
+   "id": "n16",
+   "name": "2 dakika bekle",
+   "type": "n8n-nodes-base.wait",
+   "typeVersion": 1.1,
+   "position": [
+    3300,
+    100
+   ]
+  }
+ ],
+ "connections": {
+  "Hafta içi 10:00": {
+   "main": [
+    [
+     {
+      "node": "Read Queue",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Queue": {
+   "main": [
+    [
+     {
+      "node": "Build prompts",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build prompts": {
+   "main": [
+    [
+     {
+      "node": "Groq",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Groq": {
+   "main": [
+    [
+     {
+      "node": "Parse companies",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Parse companies": {
+   "main": [
+    [
+     {
+      "node": "MX kontrol",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "MX kontrol": {
+   "main": [
+    [
+     {
+      "node": "MX geçenler",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "MX geçenler": {
+   "main": [
+    [
+     {
+      "node": "Yeni satır var mı?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Yeni satır var mı?": {
+   "main": [
+    [
+     {
+      "node": "Save to Queue",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Read Queue (güncel)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Save to Queue": {
+   "main": [
+    [
+     {
+      "node": "Read Queue (güncel)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Queue (güncel)": {
+   "main": [
+    [
+     {
+      "node": "Gönderilecekleri seç",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Gönderilecekleri seç": {
+   "main": [
+    [
+     {
+      "node": "Loop Over Items",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Loop Over Items": {
+   "main": [
+    [],
+    [
+     {
+      "node": "CV (Drive)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "CV (Drive)": {
+   "main": [
+    [
+     {
+      "node": "Gmail gönder",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Gmail gönder": {
+   "main": [
+    [
+     {
+      "node": "Mark sent",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark sent": {
+   "main": [
+    [
+     {
+      "node": "2 dakika bekle",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "2 dakika bekle": {
+   "main": [
+    [
+     {
+      "node": "Loop Over Items",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Europe/Istanbul"
+ }
+}

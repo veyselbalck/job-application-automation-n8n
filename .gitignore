@@ -1,0 +1,8 @@
+.env
+*.key
+credentials*.json
+*.xlsx
+*.csv
+!sheet-template/*.csv
+.n8n/
+n8n_data/
